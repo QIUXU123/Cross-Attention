@@ -22,7 +22,7 @@ _logger = logging.getLogger(__name__)
 def _cfg(url='', **kwargs):
     return {
         'url': url,
-        'num_classes': 5, 'input_size': (15,3, 224, 224), 'pool_size': None,
+        'num_classes': 1000, 'input_size': (3, 224, 224), 'pool_size': None,
         'crop_pct': .9, 'interpolation': 'bicubic', 'fixed_input_size': True,
         'mean': IMAGENET_DEFAULT_MEAN, 'std': IMAGENET_DEFAULT_STD,
         'first_conv': 'patch_embeds[0].proj', 'classifier': 'head',
@@ -108,6 +108,63 @@ class ConvPosEnc(nn.Module):
         feat = self.proj(feat)
         x = x + feat
         return x
+
+
+class PatchEmbed(nn.Module):
+    """ 2D Image to Patch Embedding
+    """
+    def __init__(
+            self,
+            patch_size=16,
+            in_chans=3,
+            embed_dim=96,
+            overlapped=False):
+        super().__init__()
+        patch_size = to_2tuple(patch_size)
+        self.patch_size = patch_size
+
+        if patch_size[0] == 4:
+            self.proj = nn.Conv2d(
+                in_chans,
+                embed_dim,
+                kernel_size=(7, 7),
+                stride=patch_size,
+                padding=(3, 3))
+            self.norm = nn.LayerNorm(embed_dim)
+        if patch_size[0] == 2:
+            kernel = 3 if overlapped else 2
+            pad = 1 if overlapped else 0
+            self.proj = nn.Conv2d(
+                in_chans,
+                embed_dim,
+                kernel_size=to_2tuple(kernel),
+                stride=patch_size,
+                padding=to_2tuple(pad))
+            self.norm = nn.LayerNorm(in_chans)
+
+    def forward(self, x, size):
+        H, W = size
+        dim = len(x.shape)
+        if dim == 3:
+            B, HW, C = x.shape
+            x = self.norm(x)
+            x = x.reshape(B,
+                          H,
+                          W,
+                          C).permute(0, 3, 1, 2).contiguous()
+
+        B, C, H, W = x.shape
+        if W % self.patch_size[1] != 0:
+            x = F.pad(x, (0, self.patch_size[1] - W % self.patch_size[1]))
+        if H % self.patch_size[0] != 0:
+            x = F.pad(x, (0, 0, 0, self.patch_size[0] - H % self.patch_size[0]))
+
+        x = self.proj(x)
+        newsize = (x.size(2), x.size(3))
+        x = x.flatten(2).transpose(1, 2)
+        if dim == 4:
+            x = self.norm(x)
+        return x, newsize
 class PatchEmbed3D(nn.Module):
     """ Video to Patch Embedding.
     Args:
@@ -229,6 +286,7 @@ class ChannelBlock(nn.Module):
         x = rearrange(x,"b d h w c -> b c d h w")
         return x, size
 
+
 def window_partition(x, window_size):
     """
     Args:
@@ -238,7 +296,12 @@ def window_partition(x, window_size):
         windows: (B*num_windows, window_size*window_size, C)
     """
     B, D, H, W, C = x.shape
-    x = x.view(B, D // window_size[0], window_size[0], H // window_size[1], window_size[1], W // window_size[2], window_size[2], C)
+    if D // window_size[0]!=0 and H // window_size[1]!=0 and W // window_size[2]!=0:
+        x = x.view(B, D // window_size[0], window_size[0], H // window_size[1], window_size[1], W // window_size[2], window_size[2], C)
+    elif D // window_size[0]==0 and H // window_size[1]!=0 and W // window_size[2]!=0:
+        x = x.view(B, 1, 1, H // window_size[1], window_size[1], W // window_size[2], window_size[2], C)
+    elif D // window_size[0]==0 and H // window_size[1]==0 and W // window_size[2]==0:
+        x = x.view(B, 1, 1, 1,1, 1, 1, C)
     windows = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(-1, reduce(mul, window_size), C)
     return windows
 def window_reverse(windows, window_size, B, D, H, W):
@@ -251,7 +314,12 @@ def window_reverse(windows, window_size, B, D, H, W):
     Returns:
         x: (B, D, H, W, C)
     """
-    x = windows.view(B, D // window_size[0], H // window_size[1], W // window_size[2], window_size[0], window_size[1], window_size[2], -1)
+    if D // window_size[0]!=0 and H // window_size[1]!=0 and W // window_size[2]!=0:
+        x = windows.view(B, D // window_size[0], H // window_size[1], W // window_size[2], window_size[0], window_size[1], window_size[2], -1)
+    elif D // window_size[0]==0 and H // window_size[1]!=0 and W // window_size[2]!=0:
+        x = windows.view(B, 1, H // window_size[1], W // window_size[2], 1, window_size[1], window_size[2], -1)
+    elif D // window_size[0]==0 and H // window_size[1]==0 and W // window_size[2]==0:
+        x = windows.view(B, 1, 1, 1, 1,1,1, -1)
     x = x.permute(0, 1, 4, 2, 5, 3, 6, 7).contiguous().view(B, D, H, W, -1)
     return x
 
@@ -404,7 +472,7 @@ class SpatialBlock(nn.Module):
         ffn (bool): If False, pure attention network without FFNs
     """
 
-    def __init__(self, dim, num_heads, window_size=(2,7,7),
+    def __init__(self, dim, num_heads, window_size=7,
                  mlp_ratio=4., qkv_bias=True, drop_path=0.,
                  act_layer=nn.GELU, norm_layer=nn.LayerNorm,
                  ffn=True):
@@ -445,17 +513,17 @@ class SpatialBlock(nn.Module):
         x = F.pad(x, (0, 0, pad_l, pad_r, pad_t, pad_b, pad_d0, pad_d1))
         _, Dp,Hp, Wp, _ = x.shape
 
-        x_windows = window_partition(x, window_size)
-        x_windows = x_windows.view(-1, window_size[0]*window_size[1] * window_size[2], C)
+        x_windows = window_partition(x, self.window_size)
+        x_windows = x_windows.view(-1, self.window_size[0]*self.window_size[1] * self.window_size[2], C)
 
         attn_windows = self.attn(x_windows)
 
         attn_windows = attn_windows.view(-1,
-                                         window_size[0],
-                                         window_size[1],
-                                         window_size[2],
+                                         self.window_size[0],
+                                         self.window_size[1],
+                                         self.window_size[2],
                                          C)
-        x = window_reverse(attn_windows, window_size, B, Dp,Hp, Wp)
+        x = window_reverse(attn_windows, self.window_size, B, Dp,Hp, Wp)
 
         if pad_d1 >0 or pad_r > 0 or pad_b > 0:
             x = x[:, :D, :H, :W, :].contiguous()
@@ -546,11 +614,9 @@ class DaViT(nn.Module):
             main_blocks.append(block)
         self.main_blocks = nn.ModuleList(main_blocks)
 
-        self.norms = norm_layer(self.embed_dims[-1]*49)
+        self.norms = norm_layer(self.embed_dims[-1]*7*7)
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-        self.head = nn.Linear(self.embed_dims[-1]*49, self.embed_dims[-1]*49//2)
-        self.head1 = nn.Linear(self.embed_dims[-1]*49//2, self.embed_dims[-1]*49//4)
-        self.head2 = nn.Linear(self.embed_dims[-1]*49//4, num_classes)
+        self.head = nn.Linear(self.embed_dims[-1]*7*7, num_classes)
 
         if weight_init == 'conv':
             self.apply(_init_conv_weights)
@@ -579,8 +645,6 @@ class DaViT(nn.Module):
         x = features[-1]
         x = self.norms(x)
         x = self.head(x)
-        x = self.head1(x)
-        x = self.head2(x)
         return x
 
 
@@ -593,7 +657,7 @@ def _create_transformer(
         default_cfg = deepcopy(default_cfgs[variant])
     overlay_external_default_cfg(default_cfg, kwargs)
     default_num_classes = default_cfg['num_classes']
-    default_img_size = default_cfg['input_size'][-3:]
+    default_img_size = default_cfg['input_size'][-2:]
 
     num_classes = kwargs.pop('num_classes', default_num_classes)
     img_size = kwargs.pop('img_size', default_img_size)
@@ -609,13 +673,7 @@ def _create_transformer(
         **kwargs)
 
     return model
-@register_model
-def QX_DaViT_tiny(pretrained=True, **kwargs):
-    model_kwargs = dict(
-        patch_size=(4,4,4), window_size=(2,7,7), embed_dims=(96, 192, 384, 768), num_heads=(3, 6, 12, 24),
-        depths=(1, 1, 3, 1), mlp_ratio=4., overlapped_patch=False, **kwargs)
-    print(model_kwargs)
-    return _create_transformer('DaViT_224', pretrained=pretrained, **model_kwargs)
+
 
 @register_model
 def DaViT_tiny(pretrained=False, **kwargs):
