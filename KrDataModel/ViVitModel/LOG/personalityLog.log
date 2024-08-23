@@ -1,5 +1,4 @@
 [2024-08-22 17:56:58,596]::3184030073::DEBUG::=============15framesfullshot+Video Vision Transformer Strat!=============
-[2024-08-22 17:57:16,274]::3184030073::DEBUG::=============15framesfullshot+Video Vision Transformer Strat!=============
 [2024-08-22 18:00:39,621]::1387131020::DEBUG::Epoch: 1 , 1-MAE: 0.8567 , 1-val_avg_o_loss:0.8795 , 1-val_avg_c_loss:0.8636 , 1-val_avg_e_loss:0.8526 , 1-val_avg_a_loss:0.8828 , 1-val_avg_n_loss:0.8051
 [2024-08-22 18:03:53,506]::1387131020::DEBUG::Epoch: 2 , 1-MAE: 0.8681 , 1-val_avg_o_loss:0.8813 , 1-val_avg_c_loss:0.8765 , 1-val_avg_e_loss:0.8557 , 1-val_avg_a_loss:0.8910 , 1-val_avg_n_loss:0.8362
 [2024-08-22 18:07:06,219]::1387131020::DEBUG::Epoch: 3 , 1-MAE: 0.8619 , 1-val_avg_o_loss:0.8670 , 1-val_avg_c_loss:0.8702 , 1-val_avg_e_loss:0.8504 , 1-val_avg_a_loss:0.8888 , 1-val_avg_n_loss:0.8332
